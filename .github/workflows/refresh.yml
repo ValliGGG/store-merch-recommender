@@ -1,4 +1,4 @@
-name: ARTMiE Recommender — weekly refresh
+name: Store merch refresh
 
 # Runs the data-driven merchandising pipeline for every ARTMiE store, one job
 # per store (matrix), so a failure in one store never blocks the others.
@@ -9,14 +9,15 @@ name: ARTMiE Recommender — weekly refresh
 #
 # Mode per store:
 #   full   — store has its own order history -> bestseller sort + FBT + extras.
-#   borrow — too little own history (PL ~112 orders) -> inventory-only
-#            merchandising (parent sync + in-stock-first reorder + homepage).
-#            Data-driven sort/FBT borrowed from SK is added in a later phase.
+#   borrow — too little own history (e.g. PL) -> the data-driven sort + FBT are
+#            borrowed from the source store (09_borrow_recommendations, run in
+#            the source's job); this store's own job does parent sync + homepage.
 
 on:
   schedule:
-    # Weekly, Sunday 02:00 UTC (~03:00/04:00 Bratislava). Sort isn't time-critical.
-    - cron: "0 2 * * 0"
+    # Daily 02:00 UTC. Free on public repos (unlimited Actions minutes), and
+    # daily means products that come back in stock re-surface within 24h.
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       store:

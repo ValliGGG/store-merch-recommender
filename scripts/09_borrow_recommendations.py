@@ -1,8 +1,8 @@
 """Borrow a data-rich store's demand signal and apply it to a low-data store.
 
-Some stores (e.g. PL, ~112 orders) have too little history to score from, but
-their catalog mirrors a data-rich store (SK): verified 2026-06-25 that 99.8% of
-PL products share a primary-variant SKU with an SK product. So we:
+Some stores have too little order history to score from, but their catalog
+mirrors a data-rich store (nearly all products share a primary-variant SKU with
+a product in the source store). So we:
 
   1. Read the SOURCE store's order history (its local SQLite cache) to compute
      per-product units sold + lift-based co-purchase recommendations.

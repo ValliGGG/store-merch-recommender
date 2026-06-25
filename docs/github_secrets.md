@@ -1,6 +1,6 @@
 # GitHub Actions secrets
 
-The weekly workflow (`.github/workflows/weekly_refresh.yml`) needs **one URL +
+The weekly workflow (`.github/workflows/refresh.yml`) needs **one URL +
 token pair per store** as repository secrets. Create them under
 **Settings → Secrets and variables → Actions → New repository secret**.
 
@@ -8,26 +8,25 @@ token pair per store** as repository secrets. Create them under
 
 | Secret name | Value (example) |
 |---|---|
-| `ARTMIE_SK_STORE_URL` | `20a254-6e.myshopify.com` |
+| `ARTMIE_SK_STORE_URL` | `your-main-store.myshopify.com` |
 | `ARTMIE_SK_API_TOKEN` | `shpat_…` (SK Admin API token) |
-| `ARTMIE_CZ_STORE_URL` | `cz-artmie.myshopify.com` |
+| `ARTMIE_CZ_STORE_URL` | `your-cz-store.myshopify.com` |
 | `ARTMIE_CZ_API_TOKEN` | `shpat_…` |
-| `ARTMIE_PL_STORE_URL` | `pl-artmie.myshopify.com` |
+| `ARTMIE_PL_STORE_URL` | `your-pl-store.myshopify.com` |
 | `ARTMIE_PL_API_TOKEN` | `shpat_…` |
-| `ARTMIE_HU_STORE_URL` | `hu-artmie.myshopify.com` |
+| `ARTMIE_HU_STORE_URL` | `your-hu-store.myshopify.com` |
 | `ARTMIE_HU_API_TOKEN` | `shpat_…` |
-| `ARTMIE_RO_STORE_URL` | `ro-artmie.myshopify.com` |
+| `ARTMIE_RO_STORE_URL` | `your-ro-store.myshopify.com` |
 | `ARTMIE_RO_API_TOKEN` | `shpat_…` |
-| `ARTMIE_MK_STORE_URL` | `mk-artmie.myshopify.com` |
+| `ARTMIE_MK_STORE_URL` | `your-mk-store.myshopify.com` |
 | `ARTMIE_MK_API_TOKEN` | `shpat_…` |
-| `ARTMIE_RS_STORE_URL` | `rs-artmie.myshopify.com` |
+| `ARTMIE_RS_STORE_URL` | `your-rs-store.myshopify.com` |
 | `ARTMIE_RS_API_TOKEN` | `shpat_…` |
-| `ARTMIE_BA_STORE_URL` | `ba-artmie.myshopify.com` |
+| `ARTMIE_BA_STORE_URL` | `your-ba-store.myshopify.com` |
 | `ARTMIE_BA_API_TOKEN` | `shpat_…` |
 
-All 16 values already exist locally in
-`C:/Users/Valerian/Desktop/Claude 1TEST/shopify-reports/.env`
-(`ARTMIE_<CODE>_STORE_URL` / `ARTMIE_<CODE>_API_TOKEN`).
+Each value is the store's own `*_STORE_URL` / `*_API_TOKEN` from your local
+shared `.env` (kept out of the repo via `.gitignore`).
 
 ## Notes
 
@@ -49,7 +48,7 @@ cd artmie_recomander
 for code in SK CZ PL HU RO MK RS BA; do
   for suf in STORE_URL API_TOKEN; do
     name="ARTMIE_${code}_${suf}"
-    val=$(grep -E "^${name}=" "/c/Users/Valerian/Desktop/Claude 1TEST/shopify-reports/.env" | head -1 | cut -d= -f2-)
+    val=$(grep -E "^${name}=" "$SHARED_ENV" | head -1 | cut -d= -f2-)   # SHARED_ENV=path to your shared .env
     [ -n "$val" ] && gh secret set "$name" --body "$val" --repo ValliGGG/store-merch-recommender
   done
 done

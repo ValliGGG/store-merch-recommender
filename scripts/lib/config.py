@@ -31,11 +31,10 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = PROJECT_ROOT / "config.yaml"
 # Shared token store path is overridable so the same code runs on any machine.
+# Defaults to a sibling `shopify-reports/.env` next to this repo; override with
+# the STORE_SHARED_ENV env var. On CI neither file exists (env comes from secrets).
 SHARED_ENV = Path(
-    os.environ.get(
-        "ARTMIE_SHARED_ENV",
-        r"C:/Users/Valerian/Desktop/Claude 1TEST/shopify-reports/.env",
-    )
+    os.environ.get("STORE_SHARED_ENV", str(PROJECT_ROOT.parent / "shopify-reports" / ".env"))
 )
 LOCAL_ENV = PROJECT_ROOT / ".env"
 
@@ -147,7 +146,7 @@ def load(store: str | None = None) -> Config:
     defaults = raw_all.get("defaults") or {}
     stores = raw_all.get("stores") or {}
 
-    store = (store or os.environ.get("ARTMIE_STORE") or DEFAULT_STORE).lower()
+    store = (store or os.environ.get("STORE_CODE") or DEFAULT_STORE).lower()
     if store not in stores:
         print(
             f"ERROR: unknown store {store!r}. Known stores: {', '.join(sorted(stores))}",

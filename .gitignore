@@ -22,3 +22,14 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal pricing/promo snapshots — never publish
+backups/
+
+# Brand-specific operational scripts / local tooling — kept local, NOT published
+archive/
+ops/
+theme/artmie-*.js
+docs/homepage_bestsellers_setup.md
+docs/search_ranking_setup.md
+CLOUD_SETUP.md

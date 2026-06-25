@@ -200,8 +200,8 @@ stores:
     store_url_env: ARTMIE_PL_STORE_URL
     api_token_env: ARTMIE_PL_API_TOKEN
     handle_filter: null
-    # PL has ~112 orders (verified 2026-06-25) — far too few to score from.
-    # Borrow SK's demand signal, mapped onto PL's catalog by variant SKU.
+    # PL has very low order volume — too few to score from. Borrow the source
+    # store's demand signal, mapped onto PL's catalog by variant SKU.
     mode: borrow
     borrow_from: sk
     borrow_key: sku

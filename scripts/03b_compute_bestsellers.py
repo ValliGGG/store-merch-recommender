@@ -208,7 +208,24 @@ def compute_scores(conn, product_ids: list[str], cfg, today) -> dict[str, float]
 
 
 def _in_stock(product_meta: dict, pid: str) -> bool:
-    return (product_meta.get(pid, {}).get("total_inventory") or 0) > 0
+    """In OWN stock — external-only and OOS products are NOT 'in stock' here, so
+    pins never promote them."""
+    m = product_meta.get(pid, {})
+    if "own_available" in m and m.get("own_available") is not None:
+        return bool(m.get("own_available"))
+    return (m.get("total_inventory") or 0) > 0   # fallback for pre-migration caches
+
+
+def stock_tier(product_meta: dict, pid: str) -> int:
+    """0 = own stock, 1 = external/supplier only, 2 = out of stock. Lower ranks first."""
+    m = product_meta.get(pid, {})
+    if m.get("own_available"):
+        return 0
+    if m.get("external_only"):
+        return 1
+    if (m.get("total_inventory") or 0) > 0 and "own_available" not in m:
+        return 0   # pre-migration fallback: treat any inventory as own
+    return 2
 
 
 def apply_sale_pin(ranked_pids: list[str], product_meta: dict, pin_pos: int, min_disc: float) -> list[str]:
@@ -367,9 +384,14 @@ def main():
                 print(f"[{ci}/{len(collections)}] {coll['handle']!r} — all filtered out")
                 continue
 
-            # Score + sort
+            # Score + sort. Primary key is the stock tier (own > external-only >
+            # OOS) so an external-only product can never outrank an own-stock one;
+            # score orders within each tier.
             scores = compute_scores(conn, kept, cfg, today)
-            ranked = sorted(kept, key=lambda p: (-scores.get(p, 0.0), meta[p].get("title") or ""))
+            ranked = sorted(
+                kept,
+                key=lambda p: (stock_tier(meta, p), -scores.get(p, 0.0), meta[p].get("title") or ""),
+            )
             # Pin order matters: sale pin first (slot 1), then Artmie pin (slot 2/3 falls
             # to whatever the artmie pin position is — the pin only triggers if no Artmie
             # product is in slots 0..pin_pos AFTER the sale pin has run).

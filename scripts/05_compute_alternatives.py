@@ -78,13 +78,17 @@ def main():
     # bs.compute_scores — they'll naturally fall to the bottom of any alt list.
     print("loading product cache...")
     rows = conn.execute(
-        "SELECT id, title, product_type, status, total_inventory, season_tags, is_artmie "
-        "FROM products WHERE status = 'ACTIVE'"
+        "SELECT id, title, product_type, status, total_inventory, season_tags, is_artmie, "
+        "own_available, external_only FROM products WHERE status = 'ACTIVE'"
     ).fetchall()
 
     def candidate_ok(r) -> bool:
-        # Must be in-stock — out-of-stock alternatives are useless to a customer.
-        return (r["total_inventory"] or 0) > 0
+        # Useless as a substitute if not buyable; never offer external-only
+        # (supplier) products as alternatives.
+        if r["external_only"]:
+            return False
+        return (bool(r["own_available"]) if r["own_available"] is not None
+                else (r["total_inventory"] or 0) > 0)
 
     by_type: dict[str, list] = {}
     all_active: dict[str, dict] = {}

@@ -21,6 +21,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    # Lightweight migrations for caches created before a column existed
+    # (CREATE TABLE IF NOT EXISTS won't add columns to an existing table).
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+    for col in ("own_available", "external_only"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE products ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 

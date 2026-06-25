@@ -53,6 +53,22 @@ defaults:
     out_of_stock_multiplier: 0.0
 
   # -------------------------------------------------------------------------
+  # External (supplier) warehouse handling
+  # The catalog is stocked from two locations: own ("Shop location") and an
+  # external supplier ("External (supplier)"). Each variant carries a
+  # delivery.source metafield = "supplier" when it is sold from external stock.
+  # A product is "external-only" when EVERY buyable variant is external (no own
+  # stock). Such products are demoted BELOW all own-stock products and excluded
+  # from recommendations + homepage. A product with at least one own-stock
+  # buyable variant is treated normally (mixed sourcing is fine).
+  # -------------------------------------------------------------------------
+  external_stock:
+    demote: true
+    source_metafield_namespace: delivery
+    source_metafield_key: source
+    source_external_value: supplier
+
+  # -------------------------------------------------------------------------
   # Data-safety floor (guardrail — applies to every store)
   # A sort / FBT push is REFUSED (clean skip, no write) when the number of
   # usable orders in the scoring window is below this floor.  Prevents a

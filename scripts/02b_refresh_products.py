@@ -30,9 +30,10 @@ from lib.shopify_client import ShopifyClient
 # hardcoded "-sk-" here would silently empty the cache off-SK.
 import re
 
+# first:50 (not 100) — the variants sub-connection raises per-query cost.
 QUERY = """
 query Products($cursor: String) {
-  products(first: 100, after: $cursor) {
+  products(first: 50, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     edges {
       node {
@@ -56,6 +57,12 @@ query Products($cursor: String) {
         metafields(first: 30) {
           edges { node { namespace key type value } }
         }
+        variants(first: 40) {
+          edges { node {
+            availableForSale
+            deliverySource: metafield(namespace: "delivery", key: "source") { value }
+          } }
+        }
       }
     }
   }
@@ -76,6 +83,11 @@ def main():
 
     selectors = cfg.artmie_brand["selectors"]
     season_cfg = cfg.seasonal
+
+    # External (supplier) warehouse detection.
+    ext_cfg = cfg.raw.get("external_stock", {}) or {}
+    ext_value = ext_cfg.get("source_external_value", "supplier")
+    ext_demote = bool(ext_cfg.get("demote", True))
 
     # Optional per-store eligibility filter on product handle.
     handle_filter = cfg.handle_filter
@@ -104,6 +116,22 @@ def main():
                 )
                 if is_artmie:
                     artmie_count += 1
+
+                # Own vs external (supplier) availability, from variant
+                # delivery.source. A product is external-only when EVERY buyable
+                # variant is external (no own-stock variant available).
+                own_avail = ext_avail = False
+                for ve in p.get("variants", {}).get("edges", []):
+                    v = ve["node"]
+                    if not v.get("availableForSale"):
+                        continue
+                    src = (v.get("deliverySource") or {}).get("value")
+                    if src == ext_value:
+                        ext_avail = True
+                    else:
+                        own_avail = True
+                own_available = 1 if own_avail else 0
+                external_only = 1 if (ext_demote and ext_avail and not own_avail) else 0
 
                 # occasions -> season tags
                 occ_raw = ""
@@ -151,8 +179,9 @@ def main():
                       id, legacy_id, handle, title, vendor, brand, is_artmie,
                       product_type, tags, status, total_inventory,
                       created_at, updated_at, occasion_tags, season_tags,
-                      price_min, compare_at_max, discount_pct
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      price_min, compare_at_max, discount_pct,
+                      own_available, external_only
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(id) DO UPDATE SET
                       legacy_id=excluded.legacy_id,
                       handle=excluded.handle,
@@ -170,7 +199,9 @@ def main():
                       season_tags=excluded.season_tags,
                       price_min=excluded.price_min,
                       compare_at_max=excluded.compare_at_max,
-                      discount_pct=excluded.discount_pct
+                      discount_pct=excluded.discount_pct,
+                      own_available=excluded.own_available,
+                      external_only=excluded.external_only
                     """,
                     (
                         p["id"],
@@ -191,6 +222,8 @@ def main():
                         price_min,
                         compare_max,
                         disc,
+                        own_available,
+                        external_only,
                     ),
                 )
                 upserted += 1

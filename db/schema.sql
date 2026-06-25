@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS products (
   season_tags     TEXT,            -- mapped season:* tags (computed)
   price_min       REAL,            -- cheapest variant price
   compare_at_max  REAL,            -- largest variant compare-at price
-  discount_pct    REAL NOT NULL DEFAULT 0  -- (compare_at_max - price_min) / compare_at_max, 0 if not on sale
+  discount_pct    REAL NOT NULL DEFAULT 0,  -- (compare_at_max - price_min) / compare_at_max, 0 if not on sale
+  own_available   INTEGER NOT NULL DEFAULT 0,  -- 1 if >=1 buyable variant from OWN ("Shop location") stock
+  external_only   INTEGER NOT NULL DEFAULT 0   -- 1 if buyable but ALL buyable variants are external/supplier
 );
 
 -- Track which season tags we wrote, so weekly refresh can clean them up

@@ -58,11 +58,14 @@ query($cursor:String){
 
 TGT_Q = """
 query($cursor:String){
-  products(first:250, after:$cursor){
+  products(first:100, after:$cursor){
     pageInfo{ hasNextPage endCursor }
     edges{ node{
       id status totalInventory
-      variants(first:1){ edges{ node{ sku } } }
+      variants(first:25){ edges{ node{
+        sku availableForSale
+        deliverySource: metafield(namespace:"delivery", key:"source"){ value }
+      } } }
       znacka: metafield(namespace:"custom", key:"znacka"){ value }
     } }
   }
@@ -102,8 +105,8 @@ def fetch_source_skus(client) -> dict[str, str | None]:
     return out
 
 
-def fetch_target_meta(client, artmie_values: set[str]) -> dict[str, dict]:
-    """Target -> {sku, status, inventory, is_artmie} keyed by GID."""
+def fetch_target_meta(client, artmie_values: set[str], ext_value: str) -> dict[str, dict]:
+    """Target -> {sku, status, inventory, is_artmie, own_available, external_only}."""
     out: dict[str, dict] = {}
     cursor = None
     while True:
@@ -111,11 +114,22 @@ def fetch_target_meta(client, artmie_values: set[str]) -> dict[str, dict]:
         for e in d["products"]["edges"]:
             n = e["node"]
             znacka = ((n.get("znacka") or {}).get("value") or "").strip()
+            own = ext = False
+            for ve in n.get("variants", {}).get("edges", []):
+                v = ve["node"]
+                if not v.get("availableForSale"):
+                    continue
+                if ((v.get("deliverySource") or {}).get("value")) == ext_value:
+                    ext = True
+                else:
+                    own = True
             out[n["id"]] = {
                 "sku": _primary_sku(n),
                 "status": n.get("status"),
                 "inventory": int(n.get("totalInventory") or 0),
                 "is_artmie": znacka in artmie_values,
+                "own_available": own,
+                "external_only": (ext and not own),
             }
         pi = d["products"]["pageInfo"]
         if not pi["hasNextPage"]:
@@ -242,9 +256,10 @@ def main():
           f"{len(sku_picks_src_pids)} SKUs with FBT picks")
 
     # --- map target sku -> target product (live) ---
+    ext_value = (target_cfg.raw.get("external_stock") or {}).get("source_external_value", "supplier")
     tgt_client = ShopifyClient(target_cfg.shop)
     print("fetching target product->sku map...")
-    tgt_products = fetch_target_meta(tgt_client, artmie_values)
+    tgt_products = fetch_target_meta(tgt_client, artmie_values, ext_value)
     sku_to_tgt_pid: dict[str, str] = {}
     for pid, m in tgt_products.items():
         if m["sku"]:
@@ -294,22 +309,26 @@ def main():
                   f"{MIN_COVERAGE:.0%}, left untouched")
             continue
 
-        def score(pid):
-            m = tgt_products[pid]
-            base = sku_units.get(m["sku"] or "", 0.0)
-            if m["inventory"] <= 0:
-                return -1.0  # OOS always below any in-stock (incl zero-sales) product
-            return base
+        def units(pid):
+            return sku_units.get(tgt_products[pid]["sku"] or "", 0.0)
 
-        # Stable tiebreak on CURRENT position: products with no source signal
-        # keep their existing relative order; only signal-bearing items are
-        # lifted and OOS items dropped to the bottom.
+        def tier(pid):
+            m = tgt_products[pid]
+            if m.get("own_available"):
+                return 0          # own stock first
+            if m.get("external_only"):
+                return 1          # external/supplier-only below all own stock
+            return 2              # out of stock at the bottom
+
+        # Primary key = stock tier (own > external-only > OOS); within a tier,
+        # borrowed units desc, then current position as a stable tiebreak.
         pos = {pid: i for i, pid in enumerate(active)}
-        ranked = sorted(active, key=lambda p: (-score(p), pos[p]))
+        ranked = sorted(active, key=lambda p: (tier(p), -units(p), pos[p]))
         ranked = _bs.apply_artmie_pin(
             ranked,
             {p: {"is_artmie": tgt_products[p]["is_artmie"],
-                 "total_inventory": tgt_products[p]["inventory"]} for p in ranked},
+                 "total_inventory": tgt_products[p]["inventory"],
+                 "own_available": 1 if tgt_products[p]["own_available"] else 0} for p in ranked},
             pin_pos,
         )
         try:
@@ -339,11 +358,13 @@ def main():
         sku = m["sku"]
         if not sku or sku not in sku_picks_src_pids:
             continue
-        # translate source pick SKUs -> target pids that exist + are in stock
+        # translate source pick SKUs -> target pids that exist + are in OWN stock
+        # (never recommend external-only or OOS products)
         picks = []
         for pick_sku in sku_picks_src_pids[sku]:
             tp = sku_to_tgt_pid.get(pick_sku)
-            if tp and tp != pid and tgt_products.get(tp, {}).get("inventory", 0) > 0:
+            tm = tgt_products.get(tp, {}) if tp else {}
+            if tp and tp != pid and tm.get("own_available") and not tm.get("external_only"):
                 picks.append(tp)
             if len(picks) >= max_recs:
                 break

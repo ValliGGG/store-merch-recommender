@@ -192,6 +192,7 @@ def pick_top_in_stock(conn, client, cfg, today, coll_handle: str, n: int, exclud
                 if pid in meta
                    and (meta[pid].get("status") or "").upper() == "ACTIVE"
                    and (meta[pid].get("total_inventory") or 0) > 0
+                   and not meta[pid].get("external_only")   # never feature external-only goods
                    and pid not in exclude]
     if not eligible:
         return []
@@ -209,6 +210,7 @@ def pick_wildcards(conn, exclude: set[str], n: int) -> list[str]:
         FROM products
         WHERE status = 'ACTIVE'
           AND total_inventory > 0
+          AND external_only = 0
           AND (is_artmie = 1 OR discount_pct >= 0.10)
           {f'AND id NOT IN ({placeholders})' if exclude else ''}
         """,
@@ -322,7 +324,7 @@ def main():
 
         # 2) Wildcards (need rows_by_id for is_artmie + discount_pct lookups)
         all_active_rows = conn.execute(
-            "SELECT id, is_artmie, discount_pct FROM products WHERE status='ACTIVE' AND total_inventory>0"
+            "SELECT id, is_artmie, discount_pct FROM products WHERE status='ACTIVE' AND total_inventory>0 AND external_only=0"
         ).fetchall()
         rows_by_id = {r["id"]: r for r in all_active_rows}
         wild = pick_wildcards(conn, set(picks), WILDCARD_COUNT)

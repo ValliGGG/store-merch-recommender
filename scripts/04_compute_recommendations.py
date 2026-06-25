@@ -154,7 +154,9 @@ def main():
 
         # 4. Filter candidates B by published/in-stock/in-season + not same handle
         prod_meta: dict[str, dict] = {}
-        for r in conn.execute("SELECT id, handle, status, total_inventory, season_tags FROM products"):
+        for r in conn.execute(
+            "SELECT id, handle, status, total_inventory, season_tags, own_available, external_only FROM products"
+        ):
             prod_meta[r["id"]] = dict(r)
 
         def candidate_ok(pid: str) -> bool:
@@ -163,7 +165,12 @@ def main():
                 return False
             if (m.get("status") or "").upper() != "ACTIVE":
                 return False
-            if (m.get("total_inventory") or 0) <= 0:
+            # Never recommend external-only (supplier) products, nor OOS ones.
+            if m.get("external_only"):
+                return False
+            in_own = (bool(m.get("own_available")) if m.get("own_available") is not None
+                      else (m.get("total_inventory") or 0) > 0)
+            if not in_own:
                 return False
             tags = (m.get("season_tags") or "").split(",") if m.get("season_tags") else []
             tags = [t for t in tags if t]

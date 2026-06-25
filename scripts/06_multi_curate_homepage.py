@@ -25,7 +25,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib import config as cfg_mod
+from lib import config as cfg_mod, db as db_mod
 from lib.shopify_client import ShopifyClient, ShopConfig
 
 
@@ -338,9 +338,21 @@ def main():
         print(f"  no STORE_PICKS for {code}"); return
     picks_spec = STORE_PICKS[code]
 
+    # External-only (supplier) products must never be featured on the homepage.
+    # Read them from this store's local cache (populated by 02b earlier in the run).
+    external_ids: set[str] = set()
+    try:
+        if cfg.db_path.exists():
+            c = db_mod.connect(cfg.db_path); db_mod.ensure_schema(c)
+            external_ids = {r[0] for r in c.execute("SELECT id FROM products WHERE external_only=1")}
+            c.close()
+    except Exception as e:
+        print(f"  (could not load external-only set: {e})")
+    print(f"  excluding {len(external_ids)} external-only products from homepage")
+
     selected: list[str] = []
     for handle, n, label in picks_spec:
-        cat_picks = fetch_top_in_stock(client, handle, n, set(selected))
+        cat_picks = fetch_top_in_stock(client, handle, n, set(selected) | external_ids)
         if len(cat_picks) < n:
             print(f"  ! {handle:35s} ({label}) only got {len(cat_picks)}/{n} in-stock picks")
         else:

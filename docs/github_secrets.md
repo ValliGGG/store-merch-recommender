@@ -50,7 +50,7 @@ for code in SK CZ PL HU RO MK RS BA; do
   for suf in STORE_URL API_TOKEN; do
     name="ARTMIE_${code}_${suf}"
     val=$(grep -E "^${name}=" "/c/Users/Valerian/Desktop/Claude 1TEST/shopify-reports/.env" | head -1 | cut -d= -f2-)
-    [ -n "$val" ] && gh secret set "$name" --body "$val" --repo ValliGGG/artmie-recomander
+    [ -n "$val" ] && gh secret set "$name" --body "$val" --repo ValliGGG/store-merch-recommender
   done
 done
 ```

@@ -183,10 +183,7 @@ def pick_top_in_stock(conn, client, cfg, today, coll_handle: str, n: int, exclud
     pids = fetch_collection_pids(client, h["id"])
     if not pids:
         return []
-    placeholders = ",".join("?" * len(pids))
-    rows = conn.execute(
-        f"SELECT * FROM products WHERE id IN ({placeholders})", pids
-    ).fetchall()
+    rows = bs.rows_in_chunks(conn, "SELECT * FROM products WHERE id IN ", pids)
     meta = {r["id"]: dict(r) for r in rows}
     eligible = [pid for pid in pids
                 if pid in meta

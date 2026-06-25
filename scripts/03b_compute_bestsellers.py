@@ -140,6 +140,18 @@ def ensure_recent_orders_table(conn, window_size: int) -> None:
     conn.execute("CREATE INDEX idx_recent_orders_id ON recent_orders(id)")
 
 
+def rows_in_chunks(conn, before: str, ids: list, after: str = "", chunk: int = 900) -> list:
+    """Run `<before> (<placeholders>) <after>` over `ids` in chunks, so large
+    collections never exceed SQLite's host-variable limit. Safe to merge because
+    every query here is keyed/grouped by the id that lives in its own chunk."""
+    out: list = []
+    for i in range(0, len(ids), chunk):
+        c = ids[i:i + chunk]
+        ph = ",".join("?" * len(c))
+        out.extend(conn.execute(f"{before}({ph}){after}", c).fetchall())
+    return out
+
+
 def compute_scores(conn, product_ids: list[str], cfg, today) -> dict[str, float]:
     """Score = units * sale_boost * seasonal_multiplier, plus cold-start bonus.
 
@@ -149,18 +161,13 @@ def compute_scores(conn, product_ids: list[str], cfg, today) -> dict[str, float]
     """
     if not product_ids:
         return {}
-    placeholders = ",".join("?" * len(product_ids))
-    rows = conn.execute(
-        f"""
-        SELECT li.product_id AS pid,
-               SUM(MAX(li.quantity - li.refunded_quantity, 0)) AS units
-        FROM line_items li
-        JOIN recent_orders r ON r.id = li.order_id
-        WHERE li.product_id IN ({placeholders})
-        GROUP BY li.product_id
-        """,
+    rows = rows_in_chunks(
+        conn,
+        "SELECT li.product_id AS pid, SUM(MAX(li.quantity - li.refunded_quantity, 0)) AS units "
+        "FROM line_items li JOIN recent_orders r ON r.id = li.order_id WHERE li.product_id IN ",
         product_ids,
-    ).fetchall()
+        " GROUP BY li.product_id",
+    )
     raw_units: dict[str, float] = {r["pid"]: float(r["units"] or 0) for r in rows}
 
     weights = cfg.scoring
@@ -172,8 +179,9 @@ def compute_scores(conn, product_ids: list[str], cfg, today) -> dict[str, float]
 
     score_by_pid: dict[str, float] = {}
     inventory_by_pid: dict[str, int] = {}
-    for row in conn.execute(
-        f"SELECT id, discount_pct, created_at, season_tags, total_inventory FROM products WHERE id IN ({placeholders})",
+    for row in rows_in_chunks(
+        conn,
+        "SELECT id, discount_pct, created_at, season_tags, total_inventory FROM products WHERE id IN ",
         product_ids,
     ):
         units = raw_units.get(row["id"], 0.0)
@@ -190,8 +198,8 @@ def compute_scores(conn, product_ids: list[str], cfg, today) -> dict[str, float]
     # Cold-start bonus capped relative to top organic score (no seasonal modifier on bonus)
     top_score = max(score_by_pid.values(), default=0.0)
     cap = top_score * float(weights.get("cold_start_max_score_pct", 0.25))
-    for row in conn.execute(
-        f"SELECT id, created_at FROM products WHERE id IN ({placeholders})", product_ids
+    for row in rows_in_chunks(
+        conn, "SELECT id, created_at FROM products WHERE id IN ", product_ids
     ):
         bonus = scoring.cold_start_bonus(row["created_at"], weights)
         if bonus:
@@ -367,11 +375,9 @@ def main():
                 print(f"[{ci}/{len(collections)}] {coll['handle']!r} — empty, skip")
                 continue
 
-            # Hydrate product meta from local cache
-            placeholders = ",".join("?" * len(pids))
-            rows = conn.execute(
-                f"SELECT * FROM products WHERE id IN ({placeholders})", pids
-            ).fetchall()
+            # Hydrate product meta from local cache (chunked — mega-collections
+            # can exceed SQLite's host-variable limit otherwise)
+            rows = rows_in_chunks(conn, "SELECT * FROM products WHERE id IN ", pids)
             meta: dict[str, dict] = {r["id"]: dict(r) for r in rows}
 
             # Filter — keep all active products (off-season demoted via score, not hidden)

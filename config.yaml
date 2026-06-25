@@ -1,0 +1,271 @@
+# ARTMiE Recommender — runtime configuration (store-parameterized)
+# ---------------------------------------------------------------------------
+# `defaults:` holds the shared pipeline config (identical across stores).
+# `stores:`   maps a store code -> its own credentials + per-store overrides.
+#
+# load(store) deep-merges defaults <- stores[store].  Anything you put under a
+# store overrides the matching default key (deep merge).  Never hard-code
+# tokens here — only the *names* of the env vars that hold them.
+# ---------------------------------------------------------------------------
+
+defaults:
+  api_version: "2025-01"
+
+  paths:
+    # {store} is substituted at load time so each store keeps its own cache.
+    db: "db/orders_{store}.db"
+    logs: "logs"
+
+  # -------------------------------------------------------------------------
+  # Backfill window (Phase 1)
+  # -------------------------------------------------------------------------
+  backfill:
+    months: 24
+
+  # -------------------------------------------------------------------------
+  # Best-seller scoring (Phase 2)
+  # Original spec used time-bucketed weights (30/90/365 days), but the stores
+  # imported their order history from another CMS in 2026 — every imported
+  # order has the import date as created_at, so date-based recency is
+  # meaningless until fresh organic orders accumulate.  We instead use ORDER ID
+  # monotonicity: Shopify assigns IDs in a strictly increasing sequence, so the
+  # last N orders by numeric ID approximate the most recent N orders.
+  # Score = total units sold within that window.  Switch back to date-bucketed
+  # weights once enough real orders accumulate to make recency meaningful.
+  # -------------------------------------------------------------------------
+  scoring:
+    recent_orders_window: 50000   # number of most-recent orders (by id) to score from
+    cold_start_window_days: 60
+    cold_start_weight: 5
+    cold_start_max_score_pct: 0.25  # cap cold-start bonus to 25% of #1 product's score
+
+    # Sale boost — multiplicative, mild but meaningful.
+    # adjusted_score = raw_score * (1 + discount_pct * sale_boost_coefficient)
+    sale_boost_coefficient: 0.6
+    sale_pin_position: 1
+    sale_pin_min_discount: 0.05   # 5%
+
+    # Seasonal multipliers — applied to score at sort time based on TODAY.
+    in_season_boost: 1.5
+    off_season_multiplier: 0.05
+
+    # Out-of-stock multiplier: sold-out products score 0 -> sort to the bottom.
+    out_of_stock_multiplier: 0.0
+
+  # -------------------------------------------------------------------------
+  # Data-safety floor (guardrail — applies to every store)
+  # A sort / FBT push is REFUSED (clean skip, no write) when the number of
+  # usable orders in the scoring window is below this floor.  Prevents a
+  # bad/empty data day from flattening a store's merchandising.
+  # -------------------------------------------------------------------------
+  min_orders_floor: 200
+
+  # -------------------------------------------------------------------------
+  # Brand resolution
+  # Verified live 2026-06-25 on ALL stores: brand lives in custom.znacka
+  # (NOT vendor — vendor is always "Artmie", the company name).  Artmie's own
+  # brand value is "ARTMiE®" on every store, so the selector is shared.
+  # -------------------------------------------------------------------------
+  artmie_brand:
+    selectors:
+      - type: metafield
+        namespace: custom
+        key: znacka
+        equals: "ARTMiE®"
+      - type: metafield
+        namespace: custom
+        key: znacka
+        equals: "ARTMIE®"
+      - type: metafield
+        namespace: custom
+        key: znacka
+        equals: "ARTMiE"
+      - type: metafield
+        namespace: custom
+        key: znacka
+        equals: "Artmie"
+    pin_position: 2          # 0-indexed → slot 3 in the listing
+
+  # -------------------------------------------------------------------------
+  # FBT recommendations (Phase 3)
+  # -------------------------------------------------------------------------
+  fbt:
+    # Co-occurrence is computed over the most-recent N orders by id (same
+    # order-id monotonicity rationale as scoring above) — NOT a created_at date
+    # window, because imported orders all carry the import date as created_at.
+    recent_orders_window: 100000
+    lookback_months: 18          # retained for reference; superseded by recent_orders_window
+    min_co_occurrence: 10
+    max_recommendations: 8
+    min_picks_required: 5
+    # Write to the EXISTING custom.recommended_products metafield that the theme
+    # already renders ("Customers Also Bought" / "Recommended products").
+    metafield_namespace: custom
+    metafield_key: recommended_products
+
+  # -------------------------------------------------------------------------
+  # Seasonal mask (Phase 4)
+  # Source of truth: custom.prilezitost (list metafield, Slovak occasion values).
+  # NOTE: the occasion map + keyword fallback are Slovak.  On non-SK stores the
+  # localized occasion values will simply not map (season_tags stays empty), so
+  # the seasonal mask is inert there until per-store i18n lands (Phase 3, B6).
+  # -------------------------------------------------------------------------
+  seasonal:
+    hide_tag: "hidden:off-season"
+    occasion_to_season:
+      "Vianoce": "season:christmas"
+      "Veľká noc": "season:easter"
+      "Velka noc": "season:easter"
+      "Halloween": "season:halloween"
+      "Valentín": "season:valentine"
+      "Valentin": "season:valentine"
+      "Späť do školy": "season:back-to-school"
+      "Spat do skoly": "season:back-to-school"
+      "Leto": "season:summer"
+      "Jeseň": "season:autumn"
+      "Jar": "season:spring"
+    windows:
+      season:christmas:
+        from: "10-15"
+        to: "01-06"
+      season:easter:
+        relative_to: easter
+        from_offset_weeks: -6
+        to_offset_days: 7
+      season:halloween:
+        from: "09-15"
+        to: "10-31"
+      season:valentine:
+        from: "01-20"
+        to: "02-14"
+      season:back-to-school:
+        from: "07-15"
+        to: "09-15"
+      season:summer:
+        from: "05-01"
+        to: "08-31"
+      season:autumn:
+        from: "09-01"
+        to: "11-30"
+      season:spring:
+        from: "03-01"
+        to: "05-31"
+
+# ---------------------------------------------------------------------------
+# Per-store registry
+# ---------------------------------------------------------------------------
+# mode:
+#   full   — store has its own order history → run sort + FBT from own data.
+#   borrow — store has too little history (e.g. PL) → derive sort/FBT from
+#            another store's demand signal mapped onto this store's catalog
+#            (borrow_from + borrow_key).  Borrow step is implemented in Phase 3;
+#            until then, own-data sort/FBT cleanly skip on borrow-mode stores.
+#
+# handle_filter:
+#   Optional substring a product handle MUST contain to be eligible.  SK needs
+#   "-sk-" because the SK store also hosts foreign-market clone products via
+#   Shopify Markets.  Expansion stores are single-country and standalone, so
+#   they default to no filter (process the whole catalog).  Verified live
+#   2026-06-25: "-sk-" matches 0% of handles on every expansion store, which is
+#   exactly why it must NOT be applied off-SK.
+#
+# Scope note: BG is a *market inside the SK store* (Shopify Markets), NOT a
+# standalone Shopify store — so there is no `bg` entry here.
+# ---------------------------------------------------------------------------
+stores:
+  sk:
+    store_url_env: ARTMIE_SK_STORE_URL
+    api_token_env: ARTMIE_SK_API_TOKEN
+    handle_filter: "-sk-"
+    mode: full
+    pilot_collection: vsetky-vyrobky
+
+  cz:
+    store_url_env: ARTMIE_CZ_STORE_URL
+    api_token_env: ARTMIE_CZ_API_TOKEN
+    handle_filter: null
+    mode: full
+    # Czech custom.prilezitost values (verified live 2026-06-25). Merged onto
+    # the Slovak base; windows are shared. svatba/narozeniny/každodenní are not
+    # time-seasonal, so they are intentionally unmapped.
+    seasonal:
+      occasion_to_season:
+        "vánoce": "season:christmas"
+        "velikonoce": "season:easter"
+        "halloween": "season:halloween"
+        "valentýn": "season:valentine"
+        "léto": "season:summer"
+
+  pl:
+    store_url_env: ARTMIE_PL_STORE_URL
+    api_token_env: ARTMIE_PL_API_TOKEN
+    handle_filter: null
+    # PL has ~112 orders (verified 2026-06-25) — far too few to score from.
+    # Borrow SK's demand signal, mapped onto PL's catalog by variant SKU.
+    mode: borrow
+    borrow_from: sk
+    borrow_key: sku
+    # Polish custom.prilezitost values (verified live 2026-06-25)
+    seasonal:
+      occasion_to_season:
+        "Boże Narodzenie": "season:christmas"
+        "Wielkanoc": "season:easter"
+
+  hu:
+    store_url_env: ARTMIE_HU_STORE_URL
+    api_token_env: ARTMIE_HU_API_TOKEN
+    handle_filter: null
+    mode: full
+    # HU has no prilezitost values populated yet (verified 2026-06-25);
+    # Hungarian terms added defensively for when/if they are.
+    seasonal:
+      occasion_to_season:
+        "Karácsony": "season:christmas"
+        "Húsvét": "season:easter"
+
+  ro:
+    store_url_env: ARTMIE_RO_STORE_URL
+    api_token_env: ARTMIE_RO_API_TOKEN
+    handle_filter: null
+    mode: full
+    # RO was migrated from PL and still carries POLISH prilezitost values
+    # (verified live 2026-06-25); Romanian terms added for future-localized data.
+    seasonal:
+      occasion_to_season:
+        "Boże Narodzenie": "season:christmas"
+        "Wielkanoc": "season:easter"
+        "Crăciun": "season:christmas"
+        "Paște": "season:easter"
+
+  mk:
+    store_url_env: ARTMIE_MK_STORE_URL
+    api_token_env: ARTMIE_MK_API_TOKEN
+    handle_filter: null
+    mode: full
+    # Macedonian (Cyrillic) prilezitost values (verified live 2026-06-25)
+    seasonal:
+      occasion_to_season:
+        "Божиќ": "season:christmas"
+        "Велигден": "season:easter"
+
+  rs:
+    store_url_env: ARTMIE_RS_STORE_URL
+    api_token_env: ARTMIE_RS_API_TOKEN
+    handle_filter: null
+    mode: full
+    # Serbian (Latin) prilezitost values (verified live 2026-06-25)
+    seasonal:
+      occasion_to_season:
+        "Božić": "season:christmas"
+        "Uskrs": "season:easter"
+
+  ba:
+    store_url_env: ARTMIE_BA_STORE_URL
+    api_token_env: ARTMIE_BA_API_TOKEN
+    handle_filter: null
+    mode: full
+    # Bosnian (Latin) prilezitost values (verified live 2026-06-25)
+    seasonal:
+      occasion_to_season:
+        "Božić": "season:christmas"
+        "Uskrs": "season:easter"

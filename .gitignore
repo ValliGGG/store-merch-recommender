@@ -1,0 +1,24 @@
+# Local artifacts
+# Per-store SQLite caches (orders_sk.db, orders_cz.db, ...) + WAL/SHM sidecars
+db/orders*.db
+db/orders*.db-*
+db/_bulk_orders_*.jsonl
+db/_bulk_inc_*.jsonl
+logs/
+_*.json
+_index_backup.json
+
+# Secrets — never commit
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db

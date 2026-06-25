@@ -1,0 +1,77 @@
+{%- comment -%}
+  Frequently Bought Together — reads recommendations.frequently_bought_together
+  metafield (list.product_reference) computed by artmie_recomander/04_compute_recommendations.py.
+
+  Falls back to native Shopify recommendations if the metafield is empty
+  (new product, no co-purchase history yet).
+
+  Render from sections/main-product.liquid below the description:
+    {%- render 'frequently-bought-together' -%}
+{%- endcomment -%}
+
+{%- liquid
+  assign fbt_products = product.metafields.recommendations.frequently_bought_together.value
+-%}
+
+{%- if fbt_products and fbt_products.size > 0 -%}
+  <section class="fbt-section" aria-labelledby="fbt-heading">
+    <h2 id="fbt-heading" class="fbt-heading">Často kupované spolu</h2>
+    <div class="fbt-grid">
+      {%- for rec in fbt_products limit: 8 -%}
+        {%- if rec.available -%}
+          <a href="{{ rec.url }}" class="fbt-card" aria-label="{{ rec.title | escape }}">
+            {%- if rec.featured_image -%}
+              <img
+                src="{{ rec.featured_image | image_url: width: 240 }}"
+                srcset="{{ rec.featured_image | image_url: width: 240 }} 1x, {{ rec.featured_image | image_url: width: 480 }} 2x"
+                alt="{{ rec.featured_image.alt | default: rec.title | escape }}"
+                width="240" height="240"
+                loading="lazy">
+            {%- endif -%}
+            <span class="fbt-title">{{ rec.title }}</span>
+            <span class="fbt-price">{{ rec.price | money }}</span>
+          </a>
+        {%- endif -%}
+      {%- endfor -%}
+    </div>
+  </section>
+{%- else -%}
+  {%- comment -%} No data yet — fall back to Shopify's product recommendations {%- endcomment -%}
+  {%- if recommendations.performed and recommendations.products_count > 0 -%}
+    <section class="fbt-section" aria-labelledby="fbt-heading-fallback">
+      <h2 id="fbt-heading-fallback" class="fbt-heading">Mohlo by sa vám páčiť</h2>
+      <div class="fbt-grid">
+        {%- for rec in recommendations.products limit: 8 -%}
+          <a href="{{ rec.url }}" class="fbt-card">
+            {%- if rec.featured_image -%}
+              <img src="{{ rec.featured_image | image_url: width: 240 }}"
+                   alt="{{ rec.title | escape }}" width="240" height="240" loading="lazy">
+            {%- endif -%}
+            <span class="fbt-title">{{ rec.title }}</span>
+            <span class="fbt-price">{{ rec.price | money }}</span>
+          </a>
+        {%- endfor -%}
+      </div>
+    </section>
+  {%- endif -%}
+{%- endif -%}
+
+<style>
+  .fbt-section { margin-block: 3rem; }
+  .fbt-heading { font-size: 1.25rem; margin-block-end: 1rem; }
+  .fbt-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 1rem;
+  }
+  .fbt-card {
+    display: flex; flex-direction: column; gap: .25rem;
+    text-decoration: none; color: inherit;
+  }
+  .fbt-card img {
+    width: 100%; height: auto; aspect-ratio: 1/1; object-fit: cover;
+    border-radius: 4px;
+  }
+  .fbt-title { font-size: .9rem; line-height: 1.2; }
+  .fbt-price { font-weight: 600; }
+</style>

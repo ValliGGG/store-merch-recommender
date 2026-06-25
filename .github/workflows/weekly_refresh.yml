@@ -1,0 +1,171 @@
+name: ARTMiE Recommender — weekly refresh
+
+# Runs the data-driven merchandising pipeline for every ARTMiE store, one job
+# per store (matrix), so a failure in one store never blocks the others.
+#
+# Scope = 8 Shopify stores: SK + CZ, PL, HU, RO, MK, RS, BA.
+#   (BG is a market INSIDE the SK store via Shopify Markets, not a separate
+#    store, so it has no job here.)
+#
+# Mode per store:
+#   full   — store has its own order history -> bestseller sort + FBT + extras.
+#   borrow — too little own history (PL ~112 orders) -> inventory-only
+#            merchandising (parent sync + in-stock-first reorder + homepage).
+#            Data-driven sort/FBT borrowed from SK is added in a later phase.
+
+on:
+  schedule:
+    # Weekly, Sunday 02:00 UTC (~03:00/04:00 Bratislava). Sort isn't time-critical.
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      store:
+        description: "Run a single store (sk|cz|pl|hu|ro|mk|rs|ba). Blank = all."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry-run: compute but push nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the matrix: all stores, or just the one requested via workflow_dispatch
+  # ---------------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - id: build
+        run: |
+          REQ="${{ github.event.inputs.store }}"
+          ALL='{"include":[{"store":"sk","mode":"full"},{"store":"cz","mode":"full"},{"store":"hu","mode":"full"},{"store":"ro","mode":"full"},{"store":"mk","mode":"full"},{"store":"rs","mode":"full"},{"store":"ba","mode":"full"},{"store":"pl","mode":"borrow"}]}'
+          if [ -n "$REQ" ]; then
+            case "$REQ" in
+              sk|cz|hu|ro|mk|rs|ba) MODE=full ;;
+              pl) MODE=borrow ;;
+              *) echo "::error::unknown store '$REQ'"; exit 1 ;;
+            esac
+            echo "matrix={\"include\":[{\"store\":\"$REQ\",\"mode\":\"$MODE\"}]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$ALL" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # One job per store
+  # ---------------------------------------------------------------------------
+  refresh:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3        # stagger so we don't hammer the runner pool / rate limits
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    # Per-store concurrency group so a long run for one store can't cancel another.
+    concurrency:
+      group: artmie-refresh-${{ matrix.store }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Per-store cache. Dynamic key (run_id) so each run SAVES a fresh copy and
+      # the incremental watermark actually advances week to week; restore-keys
+      # prefix restores the most recent prior copy.
+      - name: Restore SQLite cache for ${{ matrix.store }}
+        uses: actions/cache@v4
+        with:
+          path: db/orders_${{ matrix.store }}.db
+          key: orders-db-${{ matrix.store }}-${{ github.run_id }}
+          restore-keys: |
+            orders-db-${{ matrix.store }}-
+
+      - name: Refresh — ${{ matrix.store }} (${{ matrix.mode }})
+        env:
+          # All store credentials are exposed, but each job runs exactly ONE
+          # store via --store, and config.py reads ONLY that store's
+          # ARTMIE_<CODE>_* pair — tokens are never mixed between stores.
+          ARTMIE_SK_STORE_URL: ${{ secrets.ARTMIE_SK_STORE_URL }}
+          ARTMIE_SK_API_TOKEN: ${{ secrets.ARTMIE_SK_API_TOKEN }}
+          ARTMIE_CZ_STORE_URL: ${{ secrets.ARTMIE_CZ_STORE_URL }}
+          ARTMIE_CZ_API_TOKEN: ${{ secrets.ARTMIE_CZ_API_TOKEN }}
+          ARTMIE_PL_STORE_URL: ${{ secrets.ARTMIE_PL_STORE_URL }}
+          ARTMIE_PL_API_TOKEN: ${{ secrets.ARTMIE_PL_API_TOKEN }}
+          ARTMIE_HU_STORE_URL: ${{ secrets.ARTMIE_HU_STORE_URL }}
+          ARTMIE_HU_API_TOKEN: ${{ secrets.ARTMIE_HU_API_TOKEN }}
+          ARTMIE_RO_STORE_URL: ${{ secrets.ARTMIE_RO_STORE_URL }}
+          ARTMIE_RO_API_TOKEN: ${{ secrets.ARTMIE_RO_API_TOKEN }}
+          ARTMIE_MK_STORE_URL: ${{ secrets.ARTMIE_MK_STORE_URL }}
+          ARTMIE_MK_API_TOKEN: ${{ secrets.ARTMIE_MK_API_TOKEN }}
+          ARTMIE_RS_STORE_URL: ${{ secrets.ARTMIE_RS_STORE_URL }}
+          ARTMIE_RS_API_TOKEN: ${{ secrets.ARTMIE_RS_API_TOKEN }}
+          ARTMIE_BA_STORE_URL: ${{ secrets.ARTMIE_BA_STORE_URL }}
+          ARTMIE_BA_API_TOKEN: ${{ secrets.ARTMIE_BA_API_TOKEN }}
+          PYTHONIOENCODING: utf-8
+          STORE: ${{ matrix.store }}
+          MODE: ${{ matrix.mode }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -eo pipefail
+          DRY=""
+          if [ "$DRY_RUN" = "true" ]; then DRY="--dry-run"; echo "::notice::[$STORE] DRY-RUN — no pushes"; fi
+
+          if [ "$MODE" = "full" ]; then
+            # On cache miss orders_<store>.db doesn't exist yet -> full 24-month
+            # backfill (runs BEFORE 02b so the empty-products guard keeps all
+            # line items). On cache hit -> incremental delta only.
+            if [ ! -f "db/orders_${STORE}.db" ]; then
+              echo "::notice::[$STORE] no SQLite cache — running 24-month backfill"
+              python scripts/01_initial_export.py --store "$STORE"
+            else
+              python scripts/02a_incremental_export.py --store "$STORE"
+            fi
+            python scripts/02b_refresh_products.py --store "$STORE"
+            # Core sort is hard-gated: if it errors the store run is genuinely broken.
+            python scripts/03b_compute_bestsellers.py --store "$STORE" $DRY
+            # Secondary steps are best-effort so a per-store gap (e.g. a missing
+            # metafield definition or a different homepage layout) can't undo the
+            # sort or block the others — failures surface as ::warning:: in the log.
+            python scripts/04_compute_recommendations.py --store "$STORE" $DRY || echo "::warning::[$STORE] 04 compute_recommendations failed"
+            python scripts/05_compute_alternatives.py --store "$STORE" $DRY || echo "::warning::[$STORE] 05 compute_alternatives failed"
+            python scripts/06_curate_homepage.py --store "$STORE" $DRY || echo "::warning::[$STORE] 06 curate_homepage failed"
+            python scripts/07_sync_parent_collections.py --store "$STORE" $DRY || echo "::warning::[$STORE] 07 sync_parent_collections failed"
+            # SK drives borrow-mode stores (their order cache is local to this
+            # job). PL's catalog mirrors SK by SKU, so SK's demand signal sorts
+            # PL's collections + writes PL FBT. Best-effort; needs PL token (present).
+            if [ "$STORE" = "sk" ]; then
+              python scripts/09_borrow_recommendations.py --target pl $DRY || echo "::warning::[sk] borrow -> pl failed"
+            fi
+          else
+            # borrow / low-data store: parent sync + homepage only.
+            # The data-driven sort + FBT are applied by the SOURCE store's job
+            # (09_borrow_recommendations), which also handles OOS-to-bottom — so
+            # we deliberately DO NOT run 08 here (it would race/override borrow).
+            python scripts/02b_refresh_products.py --store "$STORE"
+            python scripts/07_sync_parent_collections.py --store "$STORE" $DRY || echo "::warning::[$STORE] 07 sync_parent_collections failed"
+            python scripts/06_multi_curate_homepage.py --store "$STORE" $DRY || echo "::warning::[$STORE] 06_multi_curate_homepage failed"
+          fi
+
+      - name: Save logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-logs-${{ matrix.store }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
